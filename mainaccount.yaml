@@ -1,0 +1,657 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for single EHDS reference architecture.
+Resources:
+  DataLakeBucketName:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub datazone-bucket-${AWS::AccountId}-${AWS::StackName}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256 
+  
+  CentralAccountAssetsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - LambdaFunctionTriggerGlueCrawler
+      - LambdaInvokePermission
+    Properties:
+      BucketName: !Sub ehds-assets-${AWS::AccountId}-${AWS::StackName}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt LambdaFunctionTriggerGlueCrawler.Arn
+
+  LambdaFunctionTriggerGlueCrawler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |-
+          # MIT No Attribution
+          # Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # Permission is hereby granted, free of charge, to any person obtaining a copy of this
+          # software and associated documentation files (the "Software"), to deal in the Software
+          # without restriction, including without limitation the rights to use, copy, modify,
+          # merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+          # permit persons to whom the Software is furnished to do so.
+          # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+          # INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+          # PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+          # HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+          # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+          # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+          import boto3
+          import os
+          import time
+          def lambda_handler(event, context):
+            glue = boto3.client('glue')
+            lambda_client = boto3.client('lambda')
+            lakeformation_client = boto3.client('lakeformation')
+            crawler_name = os.environ.get('CRAWLER_NAME')
+            role_arn = os.environ.get('ROLE_ARN')
+            database_name = os.environ.get('DATABASE_NAME')
+            catalog_id = os.environ.get('CATALOG_ID')
+            try:
+              response = glue.start_crawler(Name=crawler_name)
+              time.sleep(90)
+              return {
+                  'statusCode': 200,
+                  'body': 'Glue crawler started successfully and LF Data Filter Lambda was invoked.',
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Methods': 'OPTIONS, POST, GET, PUT, DELETE',
+                      'Access-Control-Allow-Headers': 'Content-Type',
+                  }
+              }
+            except Exception as e:
+              error_message = f"Error starting Glue crawler '{crawler_name}' or invoking DataFilter Lambda. Check permissions.: {str(e)}"
+              print(error_message)
+              return {
+                  'statusCode': 500,
+                  'body': error_message
+              };
+      Environment:
+        Variables:
+          CATALOG_ID: !Ref AWS::AccountId
+          DATABASE_NAME: !Ref LakeFormationDatabase
+          ROLE_ARN: !GetAtt LambdaRole.Arn
+          CRAWLER_NAME: !Sub datasetcrawler-${AWS::StackName}
+      FunctionName:  !Sub LambdaTriggerGlueCrawler-${AWS::StackName}
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.13
+      Timeout: 180
+    DependsOn:
+      - LambdaRole
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSGlueServiceRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaRole
+      Policies:
+      - PolicyName: S3AdminAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: S3BucketAccess
+              Effect: Allow
+              Action:
+                - s3:CreateBucket
+                - s3:DeleteBucket
+                - s3:ListBucket
+                - s3:GetBucketLocation
+                - s3:GetBucketPolicy
+                - s3:PutBucketPolicy
+                - s3:DeleteBucketPolicy
+                - s3:GetBucketAcl
+                - s3:PutBucketAcl
+                - s3:GetBucketVersioning
+                - s3:PutBucketVersioning
+                - s3:GetBucketPublicAccessBlock
+                - s3:PutBucketPublicAccessBlock
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:GetObjectVersion
+                - s3:GetObjectAcl
+                - s3:PutObjectAcl
+                - s3:GetBucketEncryption
+                - s3:PutBucketEncryption
+              Resource: 
+                - !Sub arn:aws:s3:::ehds-assets-${AWS::AccountId}-${AWS::StackName} 
+                - !Sub arn:aws:s3:::ehds-assets-${AWS::AccountId}-${AWS::StackName}/*
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunctionTriggerGlueCrawler
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:aws:s3:::ehds-assets-${AWS::AccountId}-${AWS::StackName}
+
+  LakeFormationSettings:
+    DependsOn: DataZoneDomainExecutionRole
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins: 
+        - DataLakePrincipalIdentifier: !GetAtt LambdaRole.Arn
+        - DataLakePrincipalIdentifier: !GetAtt GlueRole.Arn
+        - DataLakePrincipalIdentifier: !GetAtt DataZoneDomainExecutionRole.Arn
+      Parameters:
+        CROSS_ACCOUNT_VERSION: '4'
+        SET_CONTEXT: 'TRUE'
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: 
+                - glue.amazonaws.com
+                - lakeformation.amazonaws.com
+        Version: '2012-10-17'
+
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: LakeFormationPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                  - lakeformation:GrantPermissions
+                  - lakeformation:RevokePermissions
+                  - lakeformation:ListPermissions
+                  - lakeformation:PutDataLakeSettings
+                  - lakeformation:GetResourceLFTags
+                  - lakeformation:ListLFTags
+                  - lakeformation:GetLFTag
+                  - lakeformation:SearchTablesByLFTags
+                  - lakeformation:AddLFTagsToResource
+                  - lakeformation:DeleteLFTag
+                  - lakeformation:RemoveLFTagsFromResource
+                  - lakeformation:SearchDatabasesByLFTags
+                  - lakeformation:UpdateLFTag
+                  - iam:ListUsers
+                  - iam:ListRoles
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                Resource: '*'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3BucketAccess
+                Effect: Allow
+                Action:
+                  - s3:List*
+                  - s3:Get*
+                Resource: !GetAtt CentralAccountAssetsBucket.Arn
+              - Sid: S3ObjectAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub ${CentralAccountAssetsBucket.Arn}/*
+
+  LakeFormationDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub ehds-assets-${AWS::StackName}
+
+  LakeFormationDataLakeLocation:
+    Type: AWS::LakeFormation::Resource
+    DependsOn: GlueRole
+    Properties:
+      ResourceArn: !GetAtt CentralAccountAssetsBucket.Arn
+      UseServiceLinkedRole: false
+      HybridAccessEnabled: true
+      RoleArn: !GetAtt GlueRole.Arn
+
+  GlueLakeformationPermissions:
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt GlueRole.Arn
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Resource:
+        DatabaseResource:
+          CatalogId: !Ref AWS::AccountId
+          Name: !Ref LakeFormationDatabase
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      DatabaseName: !Ref LakeFormationDatabase
+      Name: !Sub datasetcrawler-${AWS::StackName}
+      Role: !GetAtt GlueRole.Arn
+      Targets:
+        S3Targets:
+          - Path: !Sub s3://${CentralAccountAssetsBucket}
+
+  GlueCrawlerTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Actions:
+        - CrawlerName: !Sub datasetcrawler-${AWS::StackName}
+      Name: !Sub CrawlerTrigger-${AWS::StackName}
+      Type: ON_DEMAND
+
+  LakeformationLambdaPermissions:
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt LambdaRole.Arn
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Resource:
+        DatabaseResource:
+          CatalogId: !Ref AWS::AccountId
+          Name: !Ref LakeFormationDatabase
+  
+  CentralAccountAssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CentralAccountAssetsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: BucketLevelPermissions
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:PutBucketPolicy
+              - s3:GetBucketPolicy
+            Resource: !GetAtt CentralAccountAssetsBucket.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: true
+          - Sid: ObjectLevelPermissions
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub ${CentralAccountAssetsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: true
+
+
+  DataZoneDomainExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - datazone.amazonaws.com
+                - lakeformation.amazonaws.com
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonDataZoneFullAccess
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonDataZoneRedshiftGlueProvisioningPolicy
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonDataZoneGlueManageAccessRolePolicy
+
+  DataZoneDomain:
+    Type: AWS::DataZone::Domain
+    DependsOn: DataLakeBucketName
+    Properties:
+      Name: !Sub DataZoneDomain-${AWS::StackName}
+      Description: DataZone domain for healthcare data
+      DomainExecutionRole: !GetAtt DataZoneDomainExecutionRole.Arn
+
+  LabEnvironmentBlueprintConfig:
+    Type: AWS::DataZone::EnvironmentBlueprintConfiguration
+    DependsOn:
+      - DataZoneDomain
+    Properties:
+      DomainIdentifier: !GetAtt DataZoneDomain.Id
+      EnabledRegions:
+        - !Ref AWS::Region
+      EnvironmentBlueprintIdentifier: DefaultDataLake
+      ManageAccessRoleArn: !GetAtt DataZoneDomainExecutionRole.Arn
+      ProvisioningRoleArn: !GetAtt DataZoneDomainExecutionRole.Arn
+      RegionalParameters:
+        - Region: !Ref AWS::Region
+          Parameters:
+            DataLakeAccountId: !Ref AWS::AccountId
+            DataLakeRegion: !Ref AWS::Region
+            S3Location: !Sub s3://${DataLakeBucketName}
+  
+  LabProject:
+    Type: AWS::DataZone::Project
+    DependsOn: LabEnvironmentBlueprintConfig
+    Properties:
+      DomainIdentifier: !GetAtt DataZoneDomain.Id
+      Name: EHDS-project
+      Description: Project for EHDS data
+
+  LabEnvironmentProfile:
+    Type: AWS::DataZone::EnvironmentProfile
+    DependsOn: LabProject
+    Properties:
+      Name: ehds-environment-profile
+      Description: DataZone domain for EHDS data
+      EnvironmentBlueprintIdentifier: !GetAtt LabEnvironmentBlueprintConfig.EnvironmentBlueprintId
+      DomainIdentifier: !GetAtt DataZoneDomain.Id
+      AwsAccountId: !Ref AWS::AccountId
+      AwsAccountRegion: !Ref AWS::Region
+      ProjectIdentifier: !GetAtt LabProject.Id
+  
+  LabEnvironment:
+    Type: AWS::DataZone::Environment
+    DependsOn: LabEnvironmentProfile
+    Properties:
+      Name: EHDSEnvironment
+      Description: Environment for the EHDS project
+      DomainIdentifier: !GetAtt DataZoneDomain.Id
+      ProjectIdentifier: !GetAtt LabProject.Id
+      EnvironmentProfileIdentifier: !GetAtt LabEnvironmentProfile.Id
+
+  ProjectMemberExecutionRole:
+    DependsOn: 
+      - LabProject
+    Type: AWS::DataZone::ProjectMembership
+    Properties:
+      Designation: PROJECT_CONTRIBUTOR
+      DomainIdentifier: !GetAtt DataZoneDomain.Id
+      Member: 
+        UserIdentifier: !GetAtt DataZoneDomainExecutionRole.Arn
+      ProjectIdentifier: !GetAtt LabProject.Id
+
+  DataSource:
+    DependsOn: 
+      - LabProject
+      - DataZoneDomain
+      - LabEnvironmentBlueprintConfig
+      - LabEnvironmentProfile
+      - LabEnvironment
+      - LakeFormationDatabase
+      - GlueCrawler
+    Type: AWS::DataZone::DataSource
+    Properties:
+      Configuration:
+        GlueRunConfiguration:
+          RelationalFilterConfigurations:
+            - DatabaseName: !Ref LakeFormationDatabase
+      DomainIdentifier: !GetAtt DataZoneDomain.Id
+      EnableSetting: ENABLED
+      EnvironmentIdentifier: !GetAtt LabEnvironment.Id
+      Name: ehds-assets
+      ProjectIdentifier: !GetAtt LabProject.Id
+      PublishOnImport: true
+      Type: GLUE
+      
+  TriggerDataSourceRunFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt DataZoneDomainExecutionRole.Arn
+      Code:
+        ZipFile: |
+          # MIT No Attribution
+          # Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # Permission is hereby granted, free of charge, to any person obtaining a copy of this
+          # software and associated documentation files (the "Software"), to deal in the Software
+          # without restriction, including without limitation the rights to use, copy, modify,
+          # merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+          # permit persons to whom the Software is furnished to do so.
+          # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+          # INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+          # PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+          # HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+          # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+          # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+          import boto3
+          import os
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+            client = boto3.client('datazone')
+            domain_id = os.environ['DOMAIN_ID']
+            data_source_id = os.environ['DATA_SOURCE_ID']
+            
+            try:
+                response = client.start_data_source_run(
+                    domainIdentifier=domain_id,
+                    dataSourceIdentifier=data_source_id
+                )
+                logger.info(f"DataSource run started successfully")
+                return {
+                    'statusCode': 200,
+                    'body': 'DataSource run started successfully'
+                }
+            except Exception as e:
+                logger.error(f"Error starting DataSource run: {str(e)}")
+                return {
+                    'statusCode': 500,
+                    'body': f'Error starting DataSource run: {str(e)}'
+                }
+      Runtime: python3.13
+      Timeout: 60
+      Environment:
+        Variables:
+          DOMAIN_ID: !GetAtt DataZoneDomain.Id
+          DATA_SOURCE_ID: !GetAtt DataSource.Id
+
+  GlueCrawlerStateChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger EventBridge rule to trigger Lambda when Glue crawler completes.
+      EventPattern:
+        source:
+          - aws.glue
+        detail-type:
+          - Glue Crawler State Change
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt TriggerDataSourceRunFunction.Arn
+          Id: TriggerDataSourceRunTarget
+
+  TriggerDataSourceRunRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DataZoneSpecificAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - datazone:StartDataSourceRun
+                  - datazone:GetDataSource
+                  - datazone:ListDataSources
+                Resource: !Sub 'arn:aws:datazone:${AWS::Region}:${AWS::AccountId}:domain/${DataZoneDomain.Id}/*'
+        - PolicyName: PassRoleToDataZone
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - iam:PassRole
+                Resource: 
+                  - !GetAtt DataZoneDomainExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: datazone.amazonaws.com
+
+  LambdaPermissionForEventBridge:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriggerDataSourceRunFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt GlueCrawlerStateChangeRule.Arn
+
+  DataZoneAutoApprovalFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt DataZoneDomainExecutionRole.Arn
+      FunctionName: datazone-auto-approval
+      Code:
+        ZipFile: |
+          # MIT No Attribution
+          # Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # Permission is hereby granted, free of charge, to any person obtaining a copy of this
+          # software and associated documentation files (the "Software"), to deal in the Software
+          # without restriction, including without limitation the rights to use, copy, modify,
+          # merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+          # permit persons to whom the Software is furnished to do so.
+          # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+          # INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+          # PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+          # HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+          # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+          # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+          import boto3
+          from botocore.exceptions import ClientError
+          import json
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def lambda_handler(event, context):
+              logger.info(f"Received event: {json.dumps(event)}")
+              
+              try:
+                  domain_id = event['detail']['metadata']['domain']
+                  subscription_id = event['detail']['metadata']['id']
+                  subscribed_listing = event['detail']['data']['subscribedListings'][0]
+                  subscribed_principal = event['detail']['data']['subscribedPrincipals'][0]
+                  
+                  listing_id = subscribed_listing['id']
+                  principal_id = subscribed_principal['id']
+                  
+                  logger.info(f"Subscribed Listing ID: {listing_id}")
+                  logger.info(f"Subscribed Principal ID: {principal_id}")
+                  
+                  datazone = boto3.client('datazone')
+                  response = datazone.accept_subscription_request(
+                      decisionComment='Auto Approved by Lambda',
+                      domainIdentifier=domain_id,
+                      identifier=subscription_id
+                  )
+                  logger.info(f"Subscription accepted: {json.dumps(response)}")
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps('Subscription request approved successfully')
+                  }
+              except KeyError as e:
+                  logger.error(f"KeyError: {str(e)} - some expected keys were missing in the event data")
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps('Error: Invalid event data structure')
+                  }
+              except IndexError as e:
+                  logger.error(f"IndexError: {str(e)} - expected lists are empty")
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps('Error: Missing subscription data')
+                  }
+              except ClientError as e:
+                  logger.error(f"ClientError: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps('Error: Failed to approve subscription request')
+                  }
+              except Exception as e:
+                  logger.error(f"Unexpected error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps('Error: Unexpected error occurred')
+                  }
+
+      Runtime: python3.13
+      Timeout: 300
+
+  DataZoneEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: datazone-subscription-event
+      EventPattern: 
+        source:
+          - aws.datazone
+        detail-type:
+          - "Subscription Request Created"
+      State: ENABLED
+      Description: datazone-subscription-event
+      EventBusName: default
+      Targets:
+        - Id: datazoneAutoApprovalTarget
+          Arn: !GetAtt DataZoneAutoApprovalFunction.Arn
+
+  LambdaInvokePermissionDataZoneAutoApprove:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DataZoneAutoApprovalFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DataZoneEventRule.Arn
+
+
+
+Outputs:
+  DomainId:
+    Description: The ID of the created DataZone Domain
+    Value: !Ref DataZoneDomain
+  DomainExecutionRoleArn:
+    Description: The ARN of the created DataZone Domain Execution Role
+    Value: !GetAtt DataZoneDomainExecutionRole.Arn

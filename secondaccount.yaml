@@ -1,0 +1,620 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for single EHDS reference architecture.
+Parameters:
+  LambdaRoleArn:
+    Type: String
+    ConstraintDescription: Must be a valid ARN
+    Description: The ARN of the Lambda role that you manually created
+
+  AssumeRoleArn:
+    Type: String
+    ConstraintDescription: Must be a valid ARN
+    Description: The ARN of the role in the governance account. You can retrieve it from the output of the governance account cloudformation template
+
+  HomeRegion:
+    Type: String
+    Description: AWS Region of the DataZone governance account
+    AllowedValues:
+      - eu-central-1
+      - eu-west-1
+      - eu-west-2
+      - eu-north-1
+      - us-east-1
+      - us-east-2
+      - us-west-2
+      - ap-northeast-2
+      - ap-southeast-1
+      - ap-southeast-2
+      - ap-northeast-1
+      - ca-central-1
+      - sa-east-1
+
+  DataZoneDomainId:
+    Type: String
+    Description: ID of the DataZone domain in the DataZone governance account. It starts with "dzd_"
+
+Resources:
+
+  CentralAccountAssetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ehds-assets-${AWS::AccountId}-${AWS::StackName}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256 
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt LambdaFunctionTriggerGlueCrawler.Arn
+  
+
+  AddLambdaPermissions:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSSMParameterAccess
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:DescribeParameters
+            Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/datazone/${AWS::StackName}/*'
+          - Sid: AllowSSMParameterList
+            Effect: Allow
+            Action:
+              - ssm:DescribeParameters
+            Resource: '*' 
+      Roles: [!Select [1, !Split ["/", !Ref LambdaRoleArn]]]
+
+  LambdaFunctionTriggerGlueCrawler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |-
+          # MIT No Attribution
+          # Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # Permission is hereby granted, free of charge, to any person obtaining a copy of this
+          # software and associated documentation files (the "Software"), to deal in the Software
+          # without restriction, including without limitation the rights to use, copy, modify,
+          # merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+          # permit persons to whom the Software is furnished to do so.
+          # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+          # INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+          # PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+          # HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+          # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+          # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+          import boto3
+          import os
+          import time
+          def lambda_handler(event, context):
+            glue = boto3.client('glue')
+            lambda_client = boto3.client('lambda')
+            lakeformation_client = boto3.client('lakeformation')
+            crawler_name = os.environ.get('CRAWLER_NAME')
+            role_arn = os.environ.get('ROLE_ARN')
+            database_name = os.environ.get('DATABASE_NAME')
+            catalog_id = os.environ.get('CATALOG_ID')
+            try:
+              response = glue.start_crawler(Name=crawler_name)
+              time.sleep(90)
+              return {
+                  'statusCode': 200,
+                  'body': 'Glue crawler started successfully and LF Data Filter Lambda was invoked.',
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Methods': 'OPTIONS, POST, GET, PUT, DELETE',
+                      'Access-Control-Allow-Headers': 'Content-Type',
+                  }
+              }
+            except Exception as e:
+              error_message = f"Error starting Glue crawler '{crawler_name}' or invoking DataFilter Lambda. Check permissions.: {str(e)}"
+              print(error_message)
+              return {
+                  'statusCode': 500,
+                  'body': error_message
+              };
+      Environment:
+        Variables:
+          CATALOG_ID: !Ref AWS::AccountId
+          DATABASE_NAME: !Ref LakeFormationDatabase
+          ROLE_ARN: !GetAtt LambdaRole.Arn
+          CRAWLER_NAME: !Sub datasetcrawler-${AWS::StackName}
+      FunctionName:  !Sub LambdaTriggerGlueCrawler-${AWS::StackName}
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.13
+      Timeout: 180
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSGlueServiceRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaRole
+      Policies:
+      - PolicyName: S3AdminAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: S3BucketAccess
+              Effect: Allow
+              Action:
+                - s3:CreateBucket
+                - s3:DeleteBucket
+                - s3:ListBucket
+                - s3:GetBucketLocation
+                - s3:GetBucketPolicy
+                - s3:PutBucketPolicy
+                - s3:DeleteBucketPolicy
+                - s3:GetBucketAcl
+                - s3:PutBucketAcl
+                - s3:GetBucketVersioning
+                - s3:PutBucketVersioning
+                - s3:GetBucketPublicAccessBlock
+                - s3:PutBucketPublicAccessBlock
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:GetObjectVersion
+                - s3:GetObjectAcl
+                - s3:PutObjectAcl
+                - s3:GetBucketEncryption
+                - s3:PutBucketEncryption
+              Resource: 
+                - !Sub arn:aws:s3:::ehds-assets-${AWS::AccountId}-${AWS::StackName} 
+                - !Sub arn:aws:s3:::ehds-assets-${AWS::AccountId}-${AWS::StackName}/*
+  
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunctionTriggerGlueCrawler
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:aws:s3:::ehds-assets-${AWS::AccountId}-${AWS::StackName}
+
+  LakeFormationSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins: 
+        - DataLakePrincipalIdentifier: !GetAtt LambdaRole.Arn
+        - DataLakePrincipalIdentifier: !GetAtt GlueRole.Arn
+        - DataLakePrincipalIdentifier: !Ref LambdaRoleArn
+      Parameters:
+        CROSS_ACCOUNT_VERSION: '4'
+        SET_CONTEXT: 'TRUE'
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: 
+                - glue.amazonaws.com
+                - lakeformation.amazonaws.com
+        Version: '2012-10-17'
+
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: LakeFormationPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lakeformation:GetDataAccess
+                  - lakeformation:GrantPermissions
+                  - lakeformation:RevokePermissions
+                  - lakeformation:ListPermissions
+                  - lakeformation:PutDataLakeSettings
+                  - lakeformation:GetResourceLFTags
+                  - lakeformation:ListLFTags
+                  - lakeformation:GetLFTag
+                  - lakeformation:SearchTablesByLFTags
+                  - lakeformation:AddLFTagsToResource
+                  - lakeformation:DeleteLFTag
+                  - lakeformation:RemoveLFTagsFromResource
+                  - lakeformation:SearchDatabasesByLFTags
+                  - lakeformation:UpdateLFTag
+                  - iam:ListUsers
+                  - iam:ListRoles
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                Resource: '*'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3BucketAccess
+                Effect: Allow
+                Action:
+                  - s3:List*
+                  - s3:Get*
+                Resource: !GetAtt CentralAccountAssetsBucket.Arn
+              - Sid: S3ObjectAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub ${CentralAccountAssetsBucket.Arn}/*
+
+  LakeFormationDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub ehds-assets-${AWS::StackName}
+
+  LakeFormationDataLakeLocation:
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !GetAtt CentralAccountAssetsBucket.Arn
+      UseServiceLinkedRole: false
+      HybridAccessEnabled: true
+      RoleArn: !GetAtt GlueRole.Arn
+
+  GlueLakeformationPermissions:
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt GlueRole.Arn
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Resource:
+        DatabaseResource:
+          CatalogId: !Ref AWS::AccountId
+          Name: !Ref LakeFormationDatabase
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      DatabaseName: !Ref LakeFormationDatabase
+      Name: !Sub datasetcrawler-${AWS::StackName}
+      Role: !GetAtt GlueRole.Arn
+      Targets:
+        S3Targets:
+          - Path: !Sub s3://${CentralAccountAssetsBucket}
+
+  GlueCrawlerTrigger:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Actions:
+        - CrawlerName: !Ref GlueCrawler
+      Name: !Sub CrawlerTrigger-${AWS::StackName}
+      Type: ON_DEMAND
+
+  LakeformationLambdaPermissions:
+    Type: AWS::LakeFormation::Permissions
+    Properties:
+      DataLakePrincipal:
+        DataLakePrincipalIdentifier: !GetAtt LambdaRole.Arn
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Resource:
+        DatabaseResource:
+          CatalogId: !Ref AWS::AccountId
+          Name: !Ref LakeFormationDatabase
+  CentralAccountAssetsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CentralAccountAssetsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: BucketLevelPermissions
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:PutBucketPolicy
+              - s3:GetBucketPolicy
+            Resource: !GetAtt CentralAccountAssetsBucket.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: true
+          - Sid: ObjectLevelPermissions
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub ${CentralAccountAssetsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: true
+  LabProject:
+    Type: AWS::DataZone::Project
+    Properties:
+      DomainIdentifier: !Ref DataZoneDomainId
+      Name: !Sub EHDS-${AWS::StackName}
+      Description: Project for EHDS data
+
+  ProjectMemberExecutionRole:
+    DependsOn: 
+      - LabProject
+    Type: AWS::DataZone::ProjectMembership
+    Properties:
+      Designation: PROJECT_OWNER
+      DomainIdentifier: !Ref DataZoneDomainId
+      Member: 
+        UserIdentifier: !Ref AssumeRoleArn
+      ProjectIdentifier: !GetAtt LabProject.Id
+
+  CreateEnvironmentFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: 
+     - LabProject
+     - AddLambdaPermissions
+    Properties:
+      Handler: index.lambda_handler
+      Role: !Ref LambdaRoleArn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+          import os
+
+          def lambda_handler(event, context):
+
+            request_type = event['RequestType']
+            if request_type == 'Delete':
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Message': 'Sucessfully deleted'})
+              return {
+                "statusCode": 200,
+              }
+            
+            # Define the role ARN and session name
+            role_arn = os.environ["ASSUME_ROLE_ARN"]
+            session_name = "AssumeRoleSession"
+
+            # Create the STS client
+            sts_client = boto3.client('sts')
+
+            # Assume the cross-account role
+            assumed_role = sts_client.assume_role(
+              RoleArn=role_arn,
+              RoleSessionName=session_name
+            )
+
+            # Extract temporary credentials
+            credentials = assumed_role['Credentials']
+
+            # Use the assumed credentials to create a DataZone client
+            datazone_client = boto3.client(
+              'datazone',
+              aws_access_key_id=credentials['AccessKeyId'],
+              aws_secret_access_key=credentials['SecretAccessKey'],
+              aws_session_token=credentials['SessionToken']
+            )
+
+            try:
+              # Find blueprint ID
+              environmentblueprintID = datazone_client.list_environment_blueprints(
+                domainIdentifier=os.environ['DOMAIN_ID'],
+                managed=True,
+                name="DefaultDataLake"
+              )
+
+              environment_blueprint_id = environmentblueprintID["items"][0]["id"]
+              
+              # Create the environment profile
+
+              profile_response = datazone_client.create_environment_profile(
+                name=f"environment-profile-{os.environ['STACK_NAME']}",
+                environmentBlueprintIdentifier=environment_blueprint_id,
+                domainIdentifier=os.environ['DOMAIN_ID'],
+                awsAccountId=os.environ['AWS_ACCOUNT_ID'],
+                awsAccountRegion=os.environ['REGION'],
+                projectIdentifier=os.environ['PROJECT_ID']
+              )
+
+              profile_id = profile_response['id']
+
+              #Create environment
+              env_response = datazone_client.create_environment(
+                name=f"environment-{os.environ['STACK_NAME']}",
+                description="Environment for the project",
+                domainIdentifier=os.environ['DOMAIN_ID'],
+                projectIdentifier=os.environ['PROJECT_ID'],
+                environmentProfileIdentifier=profile_id
+              )
+
+              env_id = env_response['id']
+
+              # Create Data Source
+              datasource_response = datazone_client.create_data_source(
+                  configuration={
+                      'glueRunConfiguration': {
+                          'relationalFilterConfigurations': [
+                              {'databaseName': os.environ['DATABASE_NAME']}
+                          ]
+                      }
+                  },
+                  domainIdentifier=os.environ['DOMAIN_ID'],
+                  enableSetting='ENABLED',
+                  environmentIdentifier=env_id,
+                  name='ehds-assets',
+                  projectIdentifier=os.environ['PROJECT_ID'],
+                  publishOnImport=True,
+                  type='GLUE'
+              )
+              
+              datasource_id = datasource_response['id']
+
+              ssm = boto3.client('ssm')
+
+              #Add to SSM
+              ssm.put_parameter(
+                  Name=f'/datazone/{os.environ["STACK_NAME"]}/datasource_id',
+                  Value=datasource_id,
+                  Type='String',
+                  Overwrite=True
+              )
+
+              # Return the response to CloudFormation
+              responseData = {'Message': 'Environment successfully created'}
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+              return {
+                  "statusCode": 200,
+              }
+            except Exception as e:
+              responseData = {'Message': str(e)}
+              print(e)
+              cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
+              return {
+                  "statusCode": 500
+              }
+
+
+      Runtime: python3.13
+      Timeout: 60
+      Environment:
+        Variables:
+          ASSUME_ROLE_ARN: !Ref AssumeRoleArn
+          DOMAIN_ID: !Ref DataZoneDomainId
+          AWS_ACCOUNT_ID: !Ref AWS::AccountId
+          REGION: !Ref AWS::Region
+          PROJECT_ID: !GetAtt LabProject.Id
+          STACK_NAME: !Ref AWS::StackName
+          DATABASE_NAME: !Ref LakeFormationDatabase
+
+  CreateEnvRun:
+    Type: "AWS::CloudFormation::CustomResource"
+    DependsOn:
+      - CreateEnvironmentFunction
+    Properties:
+      ServiceToken: !GetAtt CreateEnvironmentFunction.Arn
+      Region: !Ref AWS::Region
+     
+  TriggerDataSourceRunFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: 
+      - AddLambdaPermissions
+    Properties:
+      Handler: index.handler
+      Role: !Ref LambdaRoleArn
+      Code:
+        ZipFile: |
+          # MIT No Attribution
+          # Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # Permission is hereby granted, free of charge, to any person obtaining a copy of this
+          # software and associated documentation files (the "Software"), to deal in the Software
+          # without restriction, including without limitation the rights to use, copy, modify,
+          # merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+          # permit persons to whom the Software is furnished to do so.
+          # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+          # INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+          # PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+          # HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+          # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+          # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+          import boto3
+          import os
+          import logging
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def handler(event, context):
+
+            ssm = boto3.client('ssm')
+            data_source_id = ssm.get_parameter(Name=f'/datazone/{os.environ["STACK_NAME"]}/datasource_id')['Parameter']['Value']
+
+            # Create the STS client
+            sts_client = boto3.client('sts')
+
+            session_name = "AssumeRoleSession"
+            role_arn = os.environ["ASSUME_ROLE_ARN"]
+
+            # Assume the cross-account role
+            assumed_role = sts_client.assume_role(
+              RoleArn=role_arn,
+              RoleSessionName=session_name
+            )
+
+            # Extract temporary credentials
+            credentials = assumed_role['Credentials']
+
+            # Use the assumed credentials to create a DataZone client
+            datazone_client = boto3.client(
+                'datazone',
+                aws_access_key_id=credentials['AccessKeyId'],
+                aws_secret_access_key=credentials['SecretAccessKey'],
+                aws_session_token=credentials['SessionToken']
+            )
+
+            domain_id = os.environ['DOMAIN_ID']
+            
+            try:
+                response = datazone_client.start_data_source_run(
+                    domainIdentifier=domain_id,
+                    dataSourceIdentifier=data_source_id
+                )
+                logger.info(f"DataSource run started successfully")
+                return {
+                    'statusCode': 200,
+                    'body': 'DataSource run started successfully'
+                }
+            except Exception as e:
+                logger.error(f"Error starting DataSource run: {str(e)}")
+                return {
+                    'statusCode': 500,
+                    'body': f'Error starting DataSource run: {str(e)}'
+                }
+      Runtime: python3.13
+      Timeout: 60
+      Environment:
+        Variables:
+          DOMAIN_ID: !Ref DataZoneDomainId
+          ASSUME_ROLE_ARN: !Ref AssumeRoleArn
+          STACK_NAME: !Ref AWS::StackName
+
+  GlueCrawlerStateChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger EventBridge rule to trigger Lambda when Glue crawler completes.
+      EventPattern:
+        source:
+          - aws.glue
+        detail-type:
+          - Glue Crawler State Change
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt TriggerDataSourceRunFunction.Arn
+          Id: TriggerDataSourceRunTarget
+
+  LambdaPermissionForEventBridge:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriggerDataSourceRunFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt GlueCrawlerStateChangeRule.Arn

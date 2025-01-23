@@ -31,7 +31,7 @@ The instructions are separated in two implementations, depending on your prefere
 The following prerequisites are necessary to deploy this solution:
 
 - Access to at least one AWS account
-- Administrative IAM permissions for the services introduced in Table 1.
+- Administrative IAM permissions for [Amazon IAM](https://aws.amazon.com/iam/), [Amazon DataZone](https://aws.amazon.com/datazone/), [Amazon LakeFormation](https://aws.amazon.com/lake-formation/), [Amazon S3](https://aws.amazon.com/s3/), [AWS Lambda](https://aws.amazon.com/lambda/), [AWS Glue](https://aws.amazon.com/glue/).
 
 Note: While the second deployment option uses two AWS accounts, neither deployment option requires an AWS Organizations setup. By default, all data at rest is encrypted using AWS-managed keys through AWS Key Management Service (KMS). You have the flexibility to use customer-managed keys if you prefer more control over your encryption settings.
 

@@ -4,9 +4,11 @@
 This repository contains the code and CloudFormation template to deploy the solution described in the <BLOG_LINK> blog post. The post  walks you through the technical implementation details for building such data platforms using AWS services. Whether you are a healthcare organization, technology provider, or systems integrator, this post aims to equip you with the technical knowledge to build a secure data platform for secondary usage of health data in alignment with the [EHDS regulation](https://www.consilium.europa.eu/en/press/press-releases/2025/01/21/european-health-data-space-council-adopts-new-regulation-improving-cross-border-access-to-eu-health-data/). At the core of this implementation is Amazon DataZone, an out-of-the-box data management service that offers a broad set of fine-grained access controls and data governance configurations. This ensures secure data sharing and collaboration across teams and departments. 
 
 ## Solution Architecture
-In this blog post, we provide two scenarios of how to implement this architecture: 
+In this blog post, we provide two scenarios of how to implement this architecture:
 
 ![Solution Architecture](./screenshots/Architecture.png)
+
+> **_NOTE:_** The architecture and technical implementation serve for demonstration purposes.
 
 ### Single account deployment (Scenario 1)
 This represents the primary governance account setup where an Amazon DataZone domain serves as the foundation for centralized data management. This scenario is better for development and testing of the Amazon DataZone capabilities. It creates a comprehensive data management infrastructure. 
@@ -16,8 +18,6 @@ This represents an extension of the main setup into a secondary AWS account. It 
 
 We will refer to the primary account configured in the single account deployment option as the governance account and the second account configured in the multi-account deployment as the producer account.
 
-> **_NOTE:_** The following architecture and technical implementation serve for demonstration purposes.
- 
 The solution enhances the Amazon DataZone domain's centralized data governance with automated workflows for data transformation and publishing. When data is uploaded to an S3 bucket, it triggers an automation flow that crawls the data with an AWS Glue Crawler, adds it to the AWS Glue Data Catalog, and automatically triggers a Data Source run. This allows for the data to be made available for publishing as soon as it is added to an S3 bucket. 
 
 

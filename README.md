@@ -58,7 +58,7 @@ git clone https://github.com/aws-samples/a-technical-guide-to-building-a-data-pl
 ```
 2.	In the governance account, go to the CloudFormation console within your chosen Region. Under the Stacks section, choose the Create Stack dropdown and choose With new resources (standard).
 3.	Leave the prerequisites section with the default settings. Under the Specify template section, choose Upload a template file. Upload the *mainaccount.yml* file.
-4.	Give a Stack name of your preference.
+4.	Give a Stack name of your preference. (all lowercase letters required)
 5.	Choose Next. Leave everything default and choose the I acknowledge that AWS CloudFormation might create IAM resources checkbox.
 6.	Choose Next. Review the settings and choose Submit. 
 

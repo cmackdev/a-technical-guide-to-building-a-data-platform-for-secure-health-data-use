@@ -81,7 +81,7 @@ This section will walk you through the steps to configure the producer account. 
 5.	Under AWS RAM share managed permissions, make sure to choose *AWSRAMPermissionAmazonDataZoneDomainFullAccessWithPortalAccess*.
 6.	Finally, choose Request Association, as shown in the following figure.
 
-![Attach permissions to account association](./screenshots/AssociateAccount.png)
+![Attach permissions to account association](./screenshots/AssociateAccount.PNG)
 
 You have now requested to associate the producer account to the domain. This allows members of the associated account to access the domain’s data portal and start publishing data. 
 

@@ -72,43 +72,45 @@ If you would like to deploy a multi-account environment, follow this next sectio
 This section will walk you through the steps to configure the producer account. You need to have completed the single account deployment steps to follow these instructions.
 
 1.	In the governance account, navigate to the Amazon SageMaker platform. On the dashboard, choose View existing domains for Amazon DataZone and choose the domain with the prefix: *DataZoneDomain-<stack-name>*
-2.	On the domain page, scroll down and on the first tab named “Account associations” choose Request association, as shown in the following figure.
+2.	On the domain page, scroll down and on the first tab named “Account associations” choose "Request association", as shown in the following figure.
 
 ![Amazon DataZone account association](./screenshots/DomainAssociation.png)
 
 3.	A new page named Associate account opens. Enter the AWS Account ID of the data producer account that you want to associate.
-4.	Under RAM Policy, make sure to choose *AWSRAMPermissionDataZonePortalReadWrite*. Choose Request Association, as shown in the following figure.
+4.	Under AWS Resource Access Manager (RAM) Policy, choose AWS Organization-only or External RAM share.
+5.	Under AWS RAM share managed permissions, make sure to choose *AWSRAMPermissionAmazonDataZoneDomainFullAccessWithPortalAccess*.
+6.	Finally, choose Request Association, as shown in the following figure.
 
 ![Attach permissions to account association](./screenshots/AttachPermissions.png)
 
 You have now requested to associate the producer account to the domain. This allows members of the associated account to access the domain’s data portal and start publishing data. 
 
-5.	Still in the governance account within the Amazon DataZone domain page, go to the tab User management, as shown in the following figure. 
-6.	Choose IAM Users from the dropdown. Copy the ARN of the role that contains *DataZoneDomainExecutionRole*. You need it for a further step, so paste it in a text editor for now.
+7.	Still in the governance account within the Amazon DataZone domain page, go to the tab User management, as shown in the following figure. 
+8.	Choose IAM Users from the dropdown. Copy the ARN of the role that contains *DataZoneDomainExecutionRole*. You need it for a further step, so paste it in a text editor for now.
 
 ![Add DataZoneDomainExecutionRole](./screenshots/AddDomainExecRole.jpg)
 
 Next, you create necessary resources and permissions to run the CloudFormation stack in the producer account.
 
-7.	Log in to your producer account, ensuring you are in the AWS Region where you deployed the Amazon DataZone domain in the governance account. 
-8.	On the Amazon SageMaker Platform console, choose View requests. You will see the association request from the governance account. Choose the request and select Review Request.
-9.	A new page opens named Accept & configure AWS association. Choose Accept new permissions.
-10.	Once the association has been created, click the associated domain. Copy the IAM role under the Data portal URL in your text editor, as showed here. 
+1.	Log in to your producer account, ensuring you are in the AWS Region where you deployed the Amazon DataZone domain in the governance account. 
+2.	On the Amazon SageMaker Platform console, choose View requests. You will see the association request from the governance account. Choose the request and select Review Request.
+3.	A new page opens named Accept & configure AWS association. Choose Accept new permissions.
+4.	Once the association has been created, click the associated domain. Copy the IAM role under the Data portal URL in your text editor, as showed here. 
 
 ![Copy Data portal User ARN](./screenshots/DataPortalURL.png)
 
-11.	Scroll down to the Default Blueprints section. Select the Default Data Lake option and click “Enable”. On the next page enable the option for hybrid mode in the Data location registration section. Leave everything as default and click “Enable Blueprint”.
+5.	Scroll down to the Default Blueprints section. Select the Default Data Lake option and click “Enable”. On the next page enable the option for hybrid mode in the Data location registration section. Leave everything as default and click “Enable Blueprint”.
 
 ![Enable Default Data Lake Blueprint](./screenshots/DataLakeBlueprint.png)
 
 Next you create an IAM role for a Lambda function allowing it to perform actions on the Amazon DataZone domain.
 
-12.	Still in the producer account, visit the IAM console. Choose Role then Create role.
-13.	Make sure AWS service is chosen. In the Service or use case dropdown, choose Lambda.
-14.	Choose Next. Don’t add any permissions, and choose Next again. 
-15.	Give a name to this role, such as *Lambda-role*. Choose Create role.
-16.	After creation, search for your role and select it. It should not have any permissions for now. Choose Add permissions and Create inline policy.
-17.	Choose the JSON editor view and paste in the following policy. Make sure to replace the ARN with the Amazon DataZone domain execution role that you copied in Step 6.
+6.	Still in the producer account, visit the IAM console. Choose Role then Create role.
+7.	Make sure AWS service is chosen. In the Service or use case dropdown, choose Lambda.
+8.	Choose Next. Don’t add any permissions, and choose Next again. 
+9.	Give a name to this role, such as *Lambda-role*. Choose Create role.
+10.	After creation, search for your role and select it. It should not have any permissions for now. Choose Add permissions and Create inline policy.
+11.	Choose the JSON editor view and paste in the following policy. Make sure to replace the ARN with the Amazon DataZone domain execution role that you copied in Step 6.
 
 ```
 {
@@ -123,18 +125,18 @@ Next you create an IAM role for a Lambda function allowing it to perform actions
 }
 ```
 
-17.	Give the Policy a name and choose Create policy. Lastly, copy the ARN of this newly created IAM role for your Lambda function and paste it into your text editor.
+12.	Give the Policy a name and choose Create policy. Lastly, copy the ARN of this newly created IAM role for your Lambda function and paste it into your text editor.
 
 You must make sure the producer account can access the domain, as the portal’s URL is still greyed out. 
 
-18.	Log back in to your Governance account and visit the Amazon DataZone console. Go to the Amazon DataZone domain under the User management tab, choose Add and Add IAM Users, as shown in the following figure.
+13.	Log back in to your Governance account and visit the Amazon DataZone console. Go to the Amazon DataZone domain under the User management tab, choose Add and Add IAM Users, as shown in the following figure.
 
 ![Add IAM users to the Amazon DataZone domain](./screenshots/IAMUsers.png)
 
-19.	Next, choose the IAM Account option, Associated account, and paste the IAM Role ARN copied from the Amazon DataZone Data portal dashboard in Step 10. Choose Add then Add user(s).
-20.	Visit the IAM console, choose Roles, and search for the prefix: *<StackName>-DataZoneDomainExecutionRole* that you copied in Step 6. 
-21.	Choose the tab: Trust relationships and Edit trust policy.
-22.	Under Principal, add the following: *"AWS": "<Lambda-role-arn>"*. This is the IAM Role ARN you copied in Step 17. Your trust policy should now look like the following:
+14.	Next, choose the IAM Account option, Associated account, and paste the IAM Role ARN copied from the Amazon DataZone Data portal dashboard in Step 10. Choose Add then Add user(s).
+15.	Visit the IAM console, choose Roles, and search for the prefix: *<StackName>-DataZoneDomainExecutionRole* that you copied in Step 6. 
+16.	Choose the tab: Trust relationships and Edit trust policy.
+17.	Under Principal, add the following: *"AWS": "<Lambda-role-arn>"*. This is the IAM Role ARN you copied in Step 17. Your trust policy should now look like the following:
 
 ```
 {
@@ -159,7 +161,7 @@ You must make sure the producer account can access the domain, as the portal’s
 }
 ```
 
-23.	Choose Update policy
+18.	Choose Update policy
 
 You are now ready to deploy the stack in the producer account! In the producer account, go to CloudFormation and follow the same steps as for the main account deployment. Make sure to deploy in the same Region as the domain. This time, upload the secondaccount.yml template. This template needs the following parameters:
 
